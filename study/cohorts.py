@@ -30,6 +30,12 @@ class FrozenStudy:
     positions: tuple[ExpandedPosition, ...]
     arrows: tuple[TimelineArrow, ...]
 
+    def payload(self):
+        return {'request_id': self.request_id,
+                'fingerprint': binding_fingerprint((sample.time, sample.revision.ref) for sample in self.samples),
+                'positions': encode_positions(self.positions),
+                'arrows': [asdict(arrow) for arrow in self.arrows]}
+
 
 def study_identity(raw):
     return 'study:' + content_digest(raw)
@@ -72,18 +78,22 @@ class StudyService:
         except ValueError as error:
             raise InvalidStudy(str(error)) from error
         with self.transactions.atomic('study') as conn:
-            previous = conn.execute('SELECT id, fingerprint, body FROM studies WHERE request_id=?', (request_id,)).fetchone()
+            previous = conn.execute(
+                '''SELECT s.id, s.fingerprint, s.body FROM study_receipts r
+                   JOIN studies s ON s.id = r.study_id WHERE r.request_id=?''', (request_id,)).fetchone()
             if previous is not None:
                 if previous['fingerprint'] != fingerprint:
                     raise StudyConflict(request_id)
                 return decode_frozen_study(previous['id'], json.loads(previous['body']))
             bindings = bind_revisions(self.revisions, pairs)
             positions, arrows = build_timeline(bindings, adjacent_intersections(bindings))
-            body = canonical_json({'request_id': request_id, 'fingerprint': fingerprint,
-                                   'positions': encode_positions(positions),
-                                   'arrows': [asdict(arrow) for arrow in arrows]})
+            frozen = FrozenStudy('', request_id, bindings, positions, arrows)
+            body = canonical_json(frozen.payload())
             study_id = study_identity(body)
-            conn.execute('INSERT INTO studies VALUES (?, ?, ?, ?)', (study_id, request_id, fingerprint, body))
+            existing = conn.execute('SELECT body FROM studies WHERE id=?', (study_id,)).fetchone()
+            if existing is None:
+                conn.execute('INSERT INTO studies VALUES (?, ?, ?, ?)', (study_id, request_id, fingerprint, body))
+            conn.execute('INSERT INTO study_receipts VALUES (?, ?)', (request_id, study_id))
         return FrozenStudy(study_id, request_id, bindings, positions, arrows)
 
     def get_study(self, study_id):

@@ -54,6 +54,33 @@ def main():
                  'oracle': 'Each triangle contributes one cycle and their single common edge has no cycle.',
                  'code_paths': ['topology/inclusions.py', 'quality/reports.py', 'exchange/export.py', 'exchange/import_check.py']}
         print('POINTWISE_SCENARIO ' + json.dumps(event, sort_keys=True, separators=(',', ':')))
+        demonstrate_acceptance(root / 'intake')
+
+
+def demonstrate_acceptance(root):
+    """Two sources deliver under the same request name; A's follow-up shares parents."""
+    from intake_examples import acceptance_scenario
+
+    scenario = acceptance_scenario(root)
+    receipts = scenario['accepted']
+    if receipts['A/morning']['report_id'] == receipts['B/morning']['report_id']:
+        raise AssertionError('same-named reports from different sources collapsed')
+    if receipts['A/morning']['analysis_id'] != receipts['A/followup']['analysis_id']:
+        raise AssertionError('follow-up delivery lost its shared parent')
+    if scenario['reverified']['local'] != scenario['reverified']['original']:
+        raise AssertionError('reissued local report does not address the accepted chain')
+    print('异源同名回执', {key: value['report_id'] for key, value in receipts.items()})
+    print('共享父项', scenario['shared'])
+    print('冲突拒绝', sorted(scenario['rejected']))
+    print('重开后本地重出', scenario['local_report'])
+    print('再导出核验', scenario['reverified'])
+    event = {'case_id': 'v9', 'sources': sorted({value['source_id'] for value in receipts.values()}),
+             'same_report_request': receipts['A/morning']['report_request_id'],
+             'shared_parents': scenario['shared'], 'local_report': scenario['local_report'],
+             'reverified': scenario['reverified'], 'rejected': sorted(scenario['rejected']),
+             'code_paths': ['exchange/import_check.py', 'delivery/analysis_store.py', 'exchange/export.py',
+                            'quality/reports.py']}
+    print('POINTWISE_SCENARIO ' + json.dumps(event, sort_keys=True, separators=(',', ':')))
 
 
 if __name__ == '__main__':

@@ -1,8 +1,11 @@
 from dataclasses import dataclass
 from zipfile import BadZipFile
 
-from exchange.manifests import MANIFEST, canonical_member_bytes, decode_canonical_member, decode_manifest, verify_member_digests
+from delivery.analysis_store import PublishedArtifact
+from exchange.manifests import (MANIFEST, canonical_member_bytes, decode_canonical_member, decode_manifest,
+                                verify_member_digests)
 from exchange.readers import decode_artifact_payload, read_package_members, resolve_report_sources
+from network.model import valid_text
 from quality.encoding import QualityReport, decode_report
 from quality.lifetimes import validate_lifetime_reconstruction
 from study.cohorts import FrozenStudy, decode_frozen_study
@@ -21,6 +24,16 @@ class VerifiedPackage:
     analysis: FrozenAnalysis
     study: FrozenStudy
     sources: tuple[dict, ...]
+
+
+@dataclass(frozen=True)
+class CheckedMembers:
+    """The exact records one verification pass confirmed, ready to be accepted."""
+
+    report: PublishedArtifact
+    analysis: PublishedArtifact
+    study: FrozenStudy
+    verified: VerifiedPackage
 
 
 def validate_parent_chain(manifest, report, analysis, study):
@@ -47,6 +60,18 @@ def validate_relation_structure(study, analysis_payload, report):
 
 
 def verify_package(path):
+    return _check_package(path).verified
+
+
+def accept_package(store, source_id, path):
+    """Verify one V1 ZIP and store the very members that verification confirmed."""
+    if not valid_text(source_id):
+        raise ValueError('source identity must be nonempty text')
+    checked = _check_package(path)
+    return store.accept(source_id, checked.study, checked.analysis, checked.report)
+
+
+def _check_package(path):
     try:
         members = read_package_members(path)
         manifest = decode_manifest(members.pop(MANIFEST))
@@ -57,6 +82,7 @@ def verify_package(path):
         validate_parent_chain(manifest, report_record, analysis_record, study)
         report = decode_report(report_record.payload)
         analysis = validate_relation_structure(study, analysis_record.payload, report)
-        return VerifiedPackage(report_record.artifact_id, report, analysis, study, resolve_report_sources(report))
+        verified = VerifiedPackage(report_record.artifact_id, report, analysis, study, resolve_report_sources(report))
+        return CheckedMembers(report_record, analysis_record, study, verified)
     except (OSError, BadZipFile, ValueError, TypeError, NotImplementedError, RuntimeError) as error:
         raise PackageVerificationError(str(error)) from error
